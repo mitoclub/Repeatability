@@ -1,0 +1,88 @@
+---
+title: "Calculate repeatability for Ref and ALt alleles within human mtDNA and compare"
+author: "Konstantin Popadin"
+date: "29/07/2025"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls(all=TRUE))
+library(knitr)
+library(tidyverse)
+library(kableExtra)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(Biostrings)
+library(stringdist) # install.packages("stringdist")
+library(IRanges)
+
+source("/home/popadin/Documents/REPEATABILITY/scripts/functions/RetrieveAllRepeatsCoveringGivenPositionAndNucleotideInSequence.R")
+
+
+```
+## Background
+<br>
+<br><br>
+
+## 1. Run once to test if all is good
+
+***
+```{r}
+# get fasta from here: https://www.ncbi.nlm.nih.gov/nuccore/NC_012920.1?report=fasta and save it to data/1_raw/Homo_sapients.mtDNA.fasta
+
+mtDNA <- readDNAStringSet("../data/1_raw/Homo_sapients.mtDNA.fasta")
+mtDNA_seq <- mtDNA[[1]]
+length(mtDNA_seq)
+output_folder = "/home/popadin/Documents/REPEATABILITY/data/2_derived/01KP"
+
+RetrieveAllRepeatsCoveringGivenPositionAndNucleotideInSequence(mtDNA_seq,8473,"T",output_folder) # other parameters keep by default
+RetrieveAllRepeatsCoveringGivenPositionAndNucleotideInSequence(mtDNA_seq,8473,"A",output_folder) # other parameters keep by default
+RetrieveAllRepeatsCoveringGivenPositionAndNucleotideInSequence(mtDNA_seq,8473,"G",output_folder) # other parameters keep by default
+RetrieveAllRepeatsCoveringGivenPositionAndNucleotideInSequence(mtDNA_seq,8473,"C",output_folder) # other parameters keep by default
+
+```
+<br>
+<br><br>
+
+# 2 RUN for All positions and all nucleotides 
+
+```{r}
+
+nucleotides <- c("A", "T", "G", "C")
+output_folder <- "/home/popadin/Documents/REPEATABILITY/data/2_derived/01KP"
+seq_length <- length(mtDNA_seq)
+
+total_tasks <- seq_length * length(nucleotides)
+task_counter <- 0
+start_time <- Sys.time()
+
+# Loop over each position in the sequence
+for (pos in 1:seq_length) {
+  # Loop over each nucleotide to fix
+  for (fixed_nuc in nucleotides) {
+    task_counter <- task_counter + 1
+    # Calculate percent done
+    percent_done <- (task_counter / total_tasks) * 100
+    
+    # Timing
+    elapsed <- Sys.time() - start_time
+    
+    # Print progress message
+    cat(sprintf("Processing position: %d, nucleotide: %s (%.2f%% done), elapsed time: %s\r",
+                pos, fixed_nuc, percent_done, format(elapsed, digits=4)))
+    flush.console()
+    
+    # Call the repeat finding function
+    RetrieveAllRepeatsCoveringGivenPositionAndNucleotideInSequence(mtDNA_seq, pos, fixed_nuc, output_folder)
+  }
+}
+
+cat("\nAll processing complete. Total time:", format(Sys.time() - start_time), "\n")
+
+
+```
+

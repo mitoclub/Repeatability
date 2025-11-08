@@ -1,0 +1,305 @@
+---
+title: "Calculate repeatability for Ref and ALt alleles within human mtDNA and compare"
+author: "Konstantin Popadin"
+date: "29/07/2025"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls(all=TRUE))
+library(knitr)
+library(tidyverse)
+library(kableExtra)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(Biostrings)
+library(stringdist) # install.packages("stringdist")
+library(IRanges)
+
+```
+## Background
+<br>
+<br><br>
+
+## 1. Read mtDNA RefSeq fasta
+
+***
+```{r}
+# get fasta from here: https://www.ncbi.nlm.nih.gov/nuccore/NC_012920.1?report=fasta and save it to data/1_raw/Homo_sapients.mtDNA.fasta
+
+mtDNA <- readDNAStringSet("../data/1_raw/Homo_sapients.mtDNA.fasta")
+mtDNA_seq <- mtDNA[[1]]
+length(mtDNA_seq)
+mtDNA_seq[1:100]  # first 100 bases
+
+```
+<br>
+<br><br>
+
+## 2. QC the approach: extract motif and look for repeats
+
+```{r}
+#### EXTRACT MOTIF
+pos <- 8473
+flank <- 2  # number of nucleotides to each side
+
+# Extract motif from sequence:
+start_pos <- pos - flank
+end_pos <- pos + flank
+
+# Make sure positions are valid (within sequence bounds)
+start_pos <- max(start_pos, 1)
+end_pos <- min(end_pos, length(mtDNA_seq))
+
+motif <- subseq(mtDNA_seq, start=start_pos, end=end_pos)
+motif  # This is your motif (DNAString object)
+
+motif_str <- as.character(motif)
+motif_length <- width(motif_str)  # should be 5 here
+
+max_mismatch <- 1  # set max allowed mismatches (e.g., 1 mismatch for 20%)
+
+# Extract all possible k-mers (length = motif_length) in mtDNA_seq
+seq_length <- length(mtDNA_seq)
+all_kmers <- substring(as.character(mtDNA_seq), 1:(seq_length - motif_length + 1), motif_length:(seq_length))
+
+# Calculate hamming distance from motif to all kmers
+distances <- stringdist(motif_str, all_kmers, method = "hamming")
+
+# Get positions where distance <= max_mismatch
+matches_pos <- which(distances <= max_mismatch)
+
+# Show matched kmers and their positions
+matched_kmers <- all_kmers[matches_pos]
+
+result <- data.frame(Position = matches_pos, Motif = matched_kmers, Distance = distances[matches_pos])
+dim(result)
+print(result)
+NumberOfPerfect = nrow(result[result$Distance == 0,])
+NumberOfDegraded = nrow(result[result$Distance == 1,])
+
+```
+
+<br>
+<br><br>
+
+## 3. naive, greedy and redundant main function, which extracts all motifs, overlapping the position within the defined interval, and get all repeats for each motif; overlapped repeats are redundant (long ones may contain short ones, motif can be self linked as a repeat == identical sequences with identical coordinates with 0 humming distance) - we keep all these redundancy at this step. We filter results as next step and have a freedom to make different steps. 
+
+```{r}
+
+# Define main parameters
+seq <- mtDNA_seq  # Your reference sequence as DNAString
+pos <- 8473       # Variant position (1-based)
+fixed_nuc <- "T"  # The nucleotide we want to enforce at position 'pos'
+max_flank_left <- 20
+max_flank_right <- 20
+min_length <- 5
+max_length <- 41
+
+# Check the current nucleotide at position 'pos' and substitute if necessary
+current_nuc <- as.character(subseq(seq, start=pos, width=1))
+if (current_nuc != fixed_nuc) {
+  seq_char <- unlist(strsplit(as.character(seq), ""))
+  seq_char[pos] <- fixed_nuc
+  seq <- DNAString(paste(seq_char, collapse=""))
+}
+
+# Motif extraction with asymmetric flanks
+get_motif_around_position <- function(seq, pos, left_flank, right_flank) {
+  start_pos <- max(pos - left_flank, 1)
+  end_pos <- min(pos + right_flank, length(seq))
+  subseq(seq, start=start_pos, end=end_pos)
+}
+
+# Repeat finding
+find_approximate_repeats <- function(seq, motif, max_mismatch) {
+  motif_str <- as.character(motif)
+  motif_length <- nchar(motif_str)
+  seq_length <- length(seq)
+  all_kmers <- substring(as.character(seq), 1:(seq_length - motif_length + 1), motif_length:(seq_length))
+  distances <- stringdist(motif_str, all_kmers, method = "hamming")
+  matches_pos <- which(distances <= max_mismatch)
+  matched_kmers <- all_kmers[matches_pos]
+  data.frame(
+    repeat.seq = matched_kmers,
+    repeat.start = matches_pos,
+    repeat.end = matches_pos + motif_length - 1,
+    repeat.hamming.distance = distances[matches_pos],
+    stringsAsFactors = FALSE
+  )
+}
+
+# Main routine for fixed nucleotide only
+get_repeatability_table <- function(input_seq, pos, fixed_nuc) {
+  all_results <- data.frame()
+  seq_allele <- input_seq  # Already corrected sequence with fixed_nuc at pos
+  # Motif search for all overlaps at pos
+  for (motif_length in min_length:max_length) {
+    for (left_flank in 0:(motif_length-1)) {
+      right_flank <- motif_length - left_flank - 1
+      if (left_flank <= max_flank_left && right_flank <= max_flank_right) {
+        motif_seq <- get_motif_around_position(seq_allele, pos, left_flank, right_flank)
+        motif_string <- as.character(motif_seq)
+        this_length <- nchar(motif_string)
+        max_mismatch_allowed <- floor(0.2 * this_length)
+        repeats_df <- find_approximate_repeats(seq_allele, motif_seq, max_mismatch_allowed)
+        if (nrow(repeats_df) > 0) {
+          repeats_df$motif.seq <- motif_string
+          repeats_df$motif.length <- this_length
+          repeats_df$motif.start <- max(pos - left_flank, 1)
+          repeats_df$motif.end <- min(pos + right_flank, length(seq_allele))
+          repeats_df$nuc <- fixed_nuc
+          repeats_df$effective.length <- repeats_df$motif.length - repeats_df$repeat.hamming.distance
+          repeats_df <- repeats_df[, c(
+            "nuc", "motif.seq", "motif.length",
+            "motif.start", "motif.end",
+            "repeat.seq", "repeat.start", "repeat.end",
+            "repeat.hamming.distance", "effective.length"
+          )]
+          all_results <- rbind(all_results, repeats_df)
+        }
+      }
+    }
+  }
+  if (nrow(all_results) > 0) {
+    all_results <- cbind(pos = pos, all_results)  # Add 'pos' as first column
+    # Sort by effective.length descending
+    all_results <- all_results[order(-all_results$effective.length), ]
+  }
+  return(all_results)
+}
+
+# Call with your data
+final_results <- get_repeatability_table(seq, pos, fixed_nuc)
+
+```
+
+
+
+<br>
+<br><br>
+
+The algorithm is intentionally mathematical and exhaustive. It outputs all possible matches by the defined sequence operations, and filtration for biological relevance should be done later.
+
+Examples of filtration needs:
+
+1) motif == repeat: The motif and repeat may be exactly identical. While mathematically correct, such cases might be uninformative for biologists (for not presence of such cases is a QC).
+
+2) mismatches at margins: Because approximate matching is allowed (e.g., 20% degeneration), some repeats may have core regions matching perfectly to the motif but mismatches at the ends. These repeats are valid by the algorithm, but biologically, margins filled with mismatches may be misleading.
+
+3) nested short repeats: Shorter repeats detected may be completely contained within longer repeats. Such nested cases might be excluded in post hoc filtering.
+
+Other similar cases can also arise. For now, the main function purposely reports all matches in a straightforward manner to minimize the risk of algorithmic errors and make filtration steps explicit and flexible for downstream biological interpretation. Biological filtration steps should be applied afterward, tailored to research needs.
+
+## 4. potential filtratio steps (To DO): (i) remove rows, where motif is similar to itself; (ii) remove nested short repeats within the long ones
+
+```{r}
+##### FILTER 1: filter out rows where motif, i.e. region including the position, and repeat intervals overlap at any position (so there is no self reference)
+filtered_results <- final_results %>%
+  filter(motif.end < repeat.start | repeat.end < motif.start)
+
+#  effective longest repeat (length minus Hamming distance) in the major arc differing between Ref and Alt.
+
+filtered_results$EffectiveLength = filtered_results$motif.length - filtered_results$repeat.hamming.distance
+summary(filtered_results$EffectiveLength)
+
+####### FILTER 2: remove short repeats, nested within the longer ones:
+
+remove_nested_repeats <- function(repeats_df) {
+  filtered_repeats <- data.frame()
+  
+  for (allele in unique(repeats_df$nuc)) {
+    allele_repeats <- repeats_df[repeats_df$nuc == allele, ]
+    allele_repeats <- allele_repeats[order(-allele_repeats$EffectiveLength), ]
+    
+    kept_intervals <- IRanges() # empty set
+    
+    for (i in seq_len(nrow(allele_repeats))) {
+      current_start <- allele_repeats$repeat.start[i]
+      current_end   <- allele_repeats$repeat.end[i]
+      current_range <- IRanges(start = current_start, end = current_end)
+      
+      # Is current fully within any kept interval?
+      if (length(kept_intervals) == 0) {
+        is_nested <- FALSE
+      } else {
+        # Check if 'current_range' is strictly within any 'kept_interval'
+        is_nested <- any(start(current_range) >= start(kept_intervals) & 
+                         end(current_range) <= end(kept_intervals))
+      }
+      
+      if (!is_nested) {
+        filtered_repeats <- rbind(filtered_repeats, allele_repeats[i, ])
+        kept_intervals <- c(kept_intervals, current_range)
+      }
+    }
+  }
+  rownames(filtered_repeats) <- NULL
+  return(filtered_repeats)
+}
+
+non_nested_repeats <- remove_nested_repeats(filtered_results)
+
+```
+
+
+<br>
+<br><br>
+
+## 7. calculate repeatability proxy 1: effectively longest repeats within major arc
+
+```{r}
+
+##### remove all except major arc
+
+major_arc_start <- 5798
+major_arc_end <- 16568
+
+major_arc <- subset(
+  non_nested_repeats,
+  motif.start >= major_arc_start & motif.end <= major_arc_end &
+    repeat.start >= major_arc_start & repeat.end <= major_arc_end
+)
+
+#### estimate naive repeatability:
+# Find maximum EffectiveLength
+max_eff_len <- max(major_arc$EffectiveLength, na.rm = TRUE)
+
+# Set the range from max down to max-5 (stop at minimum 0 to avoid negative EffectiveLength)
+eff_len_values <- seq(max_eff_len, max(max_eff_len - 5, 0), by = -1)
+
+# Initialize an empty results data.frame
+results <- data.frame(
+  EffectiveLength = integer(),
+  Ref_Count = integer(),
+  Alt_Count = integer(),
+  stringsAsFactors = FALSE
+)
+
+for(eff_len in eff_len_values) {
+  ref_count <- nrow(filter(major_arc, EffectiveLength == eff_len, nuc == "T"))
+  alt_count <- nrow(filter(major_arc, EffectiveLength == eff_len, nuc == "C"))
+  
+  results <- rbind(results, data.frame(
+    EffectiveLength = eff_len,
+    Ref_Count = ref_count,
+    Alt_Count = alt_count
+  ))
+}
+
+print(results)
+
+temp15 = major_arc[major_arc$EffectiveLength >= 15,]
+
+
+
+
+
+
+
+```
+
