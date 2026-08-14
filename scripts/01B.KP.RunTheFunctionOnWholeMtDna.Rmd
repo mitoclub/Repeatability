@@ -1,5 +1,5 @@
 ---
-title: "Calculate repeatability for Ref and ALt alleles within human mtDNA and compare"
+title: "Calculate repeatability for each allele of the human mtDNA (takes 2 days)"
 author: "Konstantin Popadin"
 date: "29/07/2025"
 output:
@@ -11,18 +11,22 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 rm(list=ls(all=TRUE))
 library(knitr)
-library(tidyverse)
-library(kableExtra)
+# library(tidyverse)  # install.packages("tidyverse")
+# library(kableExtra)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
-library(Biostrings)
+library(Biostrings) # install.packages("Biostrings")
 library(stringdist) # install.packages("stringdist")
 library(IRanges)
 
-source("/home/popadin/Repeatability/scripts/functions/RetrieveAllRepeatsCoveringGivenPositionAndNucleotideInSequence.R")
+source("/home/popa/Repeatability/scripts/functions/RetrieveAllRepeatsCoveringGivenPositionAndNucleotideInSequence.R")
 
-
+#install.packages(
+#  "BiocManager",
+#  repos = "https://cloud.r-project.org"
+#)
+#BiocManager::install("Biostrings")
 ```
 ## Background
 <br>
@@ -37,7 +41,7 @@ source("/home/popadin/Repeatability/scripts/functions/RetrieveAllRepeatsCovering
 mtDNA <- readDNAStringSet("../data/1_raw/Homo_sapients.mtDNA.fasta")
 mtDNA_seq <- mtDNA[[1]]
 length(mtDNA_seq)
-output_folder = "/home/popadin/Repeatability/data/2_derived/01KP"
+output_folder = "/home/popa/Repeatability/data/2_derived/01KP"
 
 RetrieveAllRepeatsCoveringGivenPositionAndNucleotideInSequence(mtDNA_seq,8251,"T",output_folder) # other parameters keep by default
 RetrieveAllRepeatsCoveringGivenPositionAndNucleotideInSequence(mtDNA_seq,8251,"A",output_folder) # other parameters keep by default
@@ -80,7 +84,7 @@ mtDNA <- readDNAStringSet("../data/1_raw/Homo_sapients.mtDNA.fasta")
 mtDNA_seq <- mtDNA[[1]]
 length(mtDNA_seq)
 seq_length <- length(mtDNA_seq)
-output_folder = "/home/popadin/Repeatability/data/2_derived/01KP"
+output_folder = "/home/popa/Repeatability/data/2_derived/01KP"
 nucleotides <- c("A", "T", "G", "C")
 
 total_tasks <- seq_length * length(nucleotides)
@@ -88,8 +92,7 @@ task_counter <- 0
 start_time <- Sys.time()
 
 # Loop over each position in the sequence
-for (pos in 1633:seq_length) {  # 1-1632 was already run and saved in tar.xz 
-  # Loop over each nucleotide to fix
+for (pos in 1:seq_length) {   # Loop over each nucleotide 
   for (fixed_nuc in nucleotides) {
     task_counter <- task_counter + 1
     # Calculate percent done
@@ -109,7 +112,94 @@ for (pos in 1633:seq_length) {  # 1-1632 was already run and saved in tar.xz
 }
 
 cat("\nAll processing complete. Total time:", format(Sys.time() - start_time), "\n")
+```
 
+<br>
+<br><br>
+
+# 3 tar gzip groups of txt files to make several <45Mb archives for GitHub
+
+```{r}
+
+# Split a directory into gzip-compressed tar archives below the target size.
+# Original files are not deleted or modified.
+
+create_tar_parts <- function(source_dir, output_dir,
+                             target_mib = 300, # with this threshold each archive is < 50 Mb which is good for GitHub
+                             archive_prefix = "repeatability_data") {
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+  target_bytes <- target_mib * 1024^2
+  tar_overhead_per_file <- 1024
+
+  old_wd <- getwd()
+  on.exit(setwd(old_wd), add = TRUE)
+  setwd(source_dir)
+
+  # Collect files and estimate their archive size.
+  files <- list.files(".", recursive = TRUE, all.files = TRUE,
+                      include.dirs = FALSE)
+  sizes <- file.info(files)$size
+  estimated_sizes <- sizes + tar_overhead_per_file
+
+  # Divide files into groups below the target size.
+  groups <- list()
+  current_files <- character()
+  current_size <- 0
+
+  for (i in seq_along(files)) {
+    if (length(current_files) > 0 &&
+        current_size + estimated_sizes[i] > target_bytes) {
+      groups[[length(groups) + 1]] <- current_files
+      current_files <- character()
+      current_size <- 0
+    }
+
+    current_files <- c(current_files, files[i])
+    current_size <- current_size + estimated_sizes[i]
+  }
+
+  if (length(current_files) > 0)
+    groups[[length(groups) + 1]] <- current_files
+
+  # Create the archives.
+  for (i in seq_along(groups)) {
+    archive_path <- file.path(
+      output_dir,
+      sprintf("%s_%03d.tar.gz", archive_prefix, i)
+    )
+
+    utils::tar(
+      tarfile = archive_path,
+      files = groups[[i]],
+      compression = "gzip",
+      tar = "internal"
+    )
+
+    message(sprintf(
+      "Created %s: %.2f MiB",
+      basename(archive_path),
+      file.size(archive_path) / 1024^2
+    ))
+  }
+
+  invisible(groups)
+}
+
+# Example:
+create_tar_parts(
+  source_dir = "/home/popa/Repeatability/data/2_derived/01KP",
+  output_dir = "/home/popa/Repeatability/data/2_derived/01KP.ARCHIVE",
+  target_mib = 300
+)
 
 ```
 
+
+<br>
+<br><br>
+
+# 4 before pushing to GitHub remove by hand all txt files from /home/popa/Repeatability/data/2_derived/01KP
+
+```{r}
+```
